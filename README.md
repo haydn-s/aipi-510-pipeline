@@ -1,81 +1,158 @@
-# Wine ML pipeline
+# AIPI 510 ML pipeline
 
-A small class project using the bundled scikit-learn wine dataset: 178 samples,
-13 numeric features, and three known wine classes. No dataset download is needed.
+MLflow tracks experiments, parameters, metrics, artifacts, and models. `structlog`
+adds readable console logs and a JSON-lines file for each run. Shared contexts
+instrument ingestion, validation, splitting, training, evaluation, and export in
+the included example; use the same contexts for additional pipeline steps.
 
-## Run the modeling step
+## Run locally
 
-The modeling-only environment below pins the packages used for verification
-(Python 3.10.0). The team's broader `requirements.txt` is maintained separately;
-its different package versions were not used to validate this modeling step.
+From the repository root, using the existing virtual environment:
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-model.txt
-python model.py
-python -m unittest discover -s tests -v
+python -m pip install -r requirements-dev.txt
+python -m aipi_pipeline --config configs/iris-logistic.json
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-Configuration is explicit and can be changed from the command line:
+For a uv-managed environment without pip, use `uv pip install -r requirements-dev.txt`.
+The example uses scikit-learn's bundled Iris data and requires no dataset download.
+Open <http://127.0.0.1:5000> and select the `aipi-510-pipeline` experiment.
+Expand the parent run to see each step's status, duration, and logged outputs.
+The parent run includes headline evaluation metrics and a `pipeline.model_uri`
+tag pointing to the exported model, including its fitted scaler.
+
+## Run configurations and hashes
+
+Copy a JSON file in `configs/` for each experiment. Set `name`, `model.type`,
+`model.params`, `data`, `split`, `preprocessing`, and arbitrary JSON `metadata`
+(for example owner, description, dataset version, or labels). The example supports
+`logistic_regression` and `random_forest`. Unsupported model types and malformed
+configs raise errors instead of silently falling back to a default.
 
 ```bash
-python model.py --n-clusters 3 --random-state 42 --test-size 0.2 --output-dir artifacts/experiment-1
+python -m aipi_pipeline --config configs/iris-random-forest.json
 ```
 
-The default run creates `artifacts/model/pipeline.joblib` and
-`artifacts/model/metrics.json`. Reusing an output directory overwrites its files;
-use a new directory to retain an experiment. Generated artifacts are ignored by Git.
+The example constructs the requested estimator and expands its default parameters
+before starting the tracked run. The saved config contains the effective model
+parameters, split seed, test fraction, preprocessing settings, and metadata.
+Scaling, when enabled, is fitted only on training data and saved with the model.
+The example currently loads only Iris; `data` records its description/source.
+Additional pipelines can use `RunConfig` and `pipeline_run` with their own models
+and data-loading code.
 
-## Modeling design
+Each execution produces:
 
-- Reuse `data.load_data(scale=False)` for the existing cleaned, stratified 80/20
-  split (142 training rows and 36 test rows by default).
-- Fit a `StandardScaler` and then K-Means together in one sklearn `Pipeline`.
-  Both fit only on training features. Scaling matters because wine features have
-  very different units and K-Means uses Euclidean distances.
-- Use three clusters to match the dataset's three known classes, a fixed seed of
-  42, ten initializations, and the Lloyd algorithm. This is a fixed baseline,
-  with no tuning on the held-out test data.
-- Labels are used by the existing stratified split and for evaluation, never for
-  fitting the scaler or K-Means. Cluster numbers are arbitrary, not class predictions.
-- Report adjusted Rand index (ARI) for agreement with the known labels, silhouette
-  for separation in scaled feature space, cluster counts, and training inertia.
-  ARI is invariant to cluster numbering; ordinary classification accuracy is not
-  appropriate. Silhouette is JSON `null` when fewer than two clusters are present
-  or every sample has its own cluster.
+```text
+runs/<run_hash>/
+  config.json      # Immutable snapshot of the resolved configuration
+  manifest.json    # Both hashes, MLflow ID, timestamps, and execution status
+  events.jsonl     # Logs carrying both hashes and step/run IDs
+```
 
-The run report also records feature order, split row indices, configuration, and
-runtime versions. Fixed seeds and pinned dependencies support repeatable runs;
-floating-point results can still vary slightly across platforms.
+- `config_hash` is SHA-256 of the saved config's UTF-8 bytes. JSON keys are sorted,
+  whitespace is removed, and defaults are filled in. Reordering JSON keys or
+  changing formatting does not change this hash. Changing a model parameter,
+  metadata, or another resolved value does. Numbers must be finite; duplicate
+  JSON keys and unknown schema fields are rejected.
+- `run_hash` is SHA-256 of canonical JSON containing `schema_version`,
+  `config_hash`, a UTC `created_at`, and a random UUID `nonce`. These fields are
+  retained in the manifest so the hash can be verified. Running the same config
+  twice creates separate directories with different run hashes and the same
+  config hash. Prior runs are never overwritten.
 
-The verified default run achieved test ARI **0.9088** and test silhouette
-**0.2721**. These describe clustering performance, not classification accuracy.
+MLflow parent and step runs carry `pipeline.run_hash` and `pipeline.config_hash`
+tags. The parent also records `pipeline.model_type` and saves `config/config.json`,
+`config/manifest.json`, and `logs/events.jsonl` artifacts. Search by either tag to
+find one execution or compare executions with identical resolved configurations.
+MLflow retains its own native run ID, which is also stored in the manifest.
 
-## Integrate with other pipeline steps
+The local config is written before tracking startup, so a tracking connection
+failure still leaves a config and a `FAILED` manifest. Unhandled pipeline errors
+also mark the manifest as failed. A hard process termination can leave `RUNNING`
+or `CREATED` behind. The config hash identifies settings; it does not hash the
+dataset contents, source code, or dependency environment. Populate data/version
+metadata when you need to distinguish those inputs.
+
+## Runtime settings
+
+Set environment variables before running. `.env` files are not loaded automatically.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | Local SQLite database or HTTP tracking server |
+| `MLFLOW_EXPERIMENT_NAME` | `aipi-510-pipeline` | Experiment grouping |
+| `PIPELINE_RUN_DIR` | `runs` | Local directories named by each execution's run hash |
+| `LOG_LEVEL` | `INFO` | DEBUG, INFO, WARNING, ERROR, or CRITICAL |
+| `LOG_FORMAT` | `console` | `console` or `json` for stderr output |
+
+Paths are relative to the working directory. Run commands from the repository
+root so the pipeline and UI use the same database and artifact locations.
+For an existing remote tracking server, set `MLFLOW_TRACKING_URI` to its URL and
+use that server's UI. Local database files, artifacts, logs, and environments
+are excluded from Git.
+
+## Instrument another pipeline
 
 ```python
-from model import train_model
+import mlflow
+from aipi_pipeline.logging import get_logger
+from aipi_pipeline.run_config import RunConfig
+from aipi_pipeline.tracking import pipeline_run, pipeline_step
 
-pipeline, report = train_model(random_state=42)
-print(report["test"])
+log = get_logger("training")
+
+config = RunConfig({
+    "name": "my-pipeline",
+    "model": {"type": "custom_model", "params": {"seed": 42}},
+    "metadata": {"owner": "researcher", "description": "Initial baseline"},
+})
+
+with pipeline_run(config):
+    with pipeline_step("prepare"):
+        log.info("preparation_started", source="training-data")
+        # Prepare data here.
+    with pipeline_step("train"):
+        # Fit your model and log its metrics or artifacts here.
+        log.info("training_completed")
 ```
 
-For inference, load the entire saved pipeline and supply unscaled features with
-the same columns and order used during training. Do not scale a second time or
-pass the target column. Only load joblib files from trusted sources, using the
-same dependency versions as training.
+Each step is a nested MLflow run. Logs include UTC time, severity, pipeline name,
+step name, both hashes, and MLflow run IDs. Unhandled exceptions produce tracebacks and mark
+both the step and its parent run as failed. The local JSON log is uploaded to the
+parent's `logs/` artifacts on success or failure. Duration recording and final
+manifest/log uploads are best effort: failures are logged locally and do not
+replace an exception from pipeline code. The initial config upload is required;
+if it fails, the pipeline body does not execute and its local record is retained.
 
-```python
-import joblib
-from data import load_data
+The helpers configure the `aipi_pipeline` logger namespace. Other application
+logging handlers are preserved. `LOG_LEVEL=WARNING` or higher suppresses normal
+start/completion events; use the default `INFO` for full step logs.
+This initial implementation supports one sequential pipeline per process.
+Use separate processes for parallel pipelines; the helpers configure process-wide
+MLflow and structlog state.
 
-pipeline = joblib.load("artifacts/model/pipeline.joblib")
-_, X_test, _, _ = load_data(scale=False)
-cluster_ids = pipeline.predict(X_test)
+## Tests
+
+```bash
+python -m pytest -q
 ```
 
-`build_model()` exposes an unfitted pipeline for other orchestration code, and
-`evaluate_model(pipeline, X, y)` evaluates raw feature inputs without refitting.
-Tests cover repeatability, training-only preprocessing, holdout scoring, undefined
-silhouette handling, and artifact loading with identical predictions.
+Tests use temporary SQLite stores and log directories. They cover run lifecycle,
+failure propagation, log correlation, repeated logger setup, model loading,
+configuration validation, hash stability, snapshot integrity, and distinct
+execution records for repeated configurations.
+
+The config/persistence tests have no third-party dependencies. The model tests
+need only the existing scikit-learn environment:
+
+```bash
+python -m unittest discover -s tests -p test_run_config.py -v
+python -m unittest discover -s tests -p test_models.py -v
+```
+
+Implementation references: [MLflow tracking API](https://mlflow.org/docs/latest/api_reference/python_api/mlflow.html),
+[SQLite backend](https://mlflow.org/docs/latest/tracking/backend-stores/), and
+[structlog standard-library integration](https://www.structlog.org/en/stable/standard-library.html).
