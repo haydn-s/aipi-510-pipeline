@@ -91,8 +91,8 @@ Set environment variables before running. `.env` files are not loaded automatica
 Paths are relative to the working directory. Run commands from the repository
 root so the pipeline and UI use the same database and artifact locations.
 For an existing remote tracking server, set `MLFLOW_TRACKING_URI` to its URL and
-use that server's UI. Local database files, artifacts, logs, and environments
-are excluded from Git.
+use that server's UI. Local database files, logs, environments, and generated experiment artifacts
+are excluded from Git, except for the checked-in wine baseline described below.
 
 ## Instrument another pipeline
 
@@ -156,3 +156,36 @@ python -m unittest discover -s tests -p test_models.py -v
 Implementation references: [MLflow tracking API](https://mlflow.org/docs/latest/api_reference/python_api/mlflow.html),
 [SQLite backend](https://mlflow.org/docs/latest/tracking/backend-stores/), and
 [structlog standard-library integration](https://www.structlog.org/en/stable/standard-library.html).
+
+## Wine K-Means baseline results
+
+These are results from the standalone wine modeling step (`python model.py`),
+separate from the Iris tracking example above. Use `requirements-model.txt` for
+the tested modeling environment. The default run uses three clusters, seed 42,
+ten initializations, and train-only standard scaling on a stratified 80/20 split.
+
+
+The checked-in [metrics report](artifacts/model/metrics.json) contains full-precision
+results, split indices, configuration, and runtime versions from the default run.
+The [fitted pipeline](artifacts/model/pipeline.joblib) includes the scaler and model.
+These results were produced by the modeling implementation in commit `c0819c9`
+using the environment pinned in `requirements-model.txt`.
+
+| Metric | Training | Holdout test |
+| --- | ---: | ---: |
+| Samples | 142 | 36 |
+| Adjusted Rand index | 0.8937 | 0.9088 |
+| Silhouette score | 0.2875 | 0.2721 |
+| Cluster 0 samples | 49 | 13 |
+| Cluster 1 samples | 41 | 10 |
+| Cluster 2 samples | 52 | 13 |
+
+Training inertia was **1013.8835**, with convergence after **5 iterations**.
+Agreement with the known wine classes is high, while the silhouette score
+indicates some overlap between clusters. The 36-row holdout is small, so these
+results describe this fixed split rather than performance across repeated splits.
+
+The default model and metrics are committed for the class report. Running
+`python model.py` overwrites these files; use `--output-dir artifacts/experiment-1`
+to keep a separate experiment. ARI measures agreement with the known classes;
+cluster IDs are arbitrary and these scores are not classification accuracy.

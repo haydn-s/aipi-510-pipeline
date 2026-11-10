@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-artifacts/
+artifacts/*
+!artifacts/model/
+artifacts/model/*
+!artifacts/model/metrics.json
+!artifacts/model/pipeline.joblib
 .DS_Store
