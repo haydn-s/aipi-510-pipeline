@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "iris-logistic-baseline",
+  "model": {
+    "type": "logistic_regression",
+    "params": {"max_iter": 200}
+  },
+  "data": {"name": "iris", "source": "sklearn.datasets.load_iris"},
+  "split": {"test_size": 0.2, "random_state": 42},
+  "preprocessing": {"standardize": true},
+  "metadata": {
+    "owner": "",
+    "description": "Scaled logistic regression baseline",
+    "tags": ["baseline"]
+  }
+}

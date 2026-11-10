@@ -27,3 +27,7 @@ threadpoolctl==3.8.0
 torch==2.15.0
 typing_extensions==4.16.0
 tzdata==2026.6
+
+# Experiment tracking and structured pipeline logging.
+mlflow>=3.7,<4
+structlog==26.1.0
